@@ -1,6 +1,7 @@
 package com.rpt11.bleproofcentral
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.bluetooth.*
 import android.bluetooth.le.ScanCallback
@@ -22,7 +23,6 @@ import android.widget.TextView
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import com.google.android.material.switchmaterial.SwitchMaterial
 import java.text.SimpleDateFormat
 import java.util.*
@@ -30,7 +30,13 @@ import java.util.*
 private const val ENABLE_BLUETOOTH_REQUEST_CODE = 1
 private const val LOCATION_PERMISSION_REQUEST_CODE = 2
 private const val BLUETOOTH_ALL_PERMISSIONS_REQUEST_CODE = 3
-private const val SERVICE_UUID = "25AE1441-05D3-4C5B-8281-93D4E07420CF"
+
+//private const val SERVICE_UUID = "25AE1441-05D3-4C5B-8281-93D4E07420CF"
+
+private const val SERVICE_UUID1 = "00005aa0-0000-1000-8000-00805f9b34fb"
+private const val SERVICE_UUID1_MASK = "0000FFFF-0000-0000-0000-000000000000"
+
+
 private const val CHAR_FOR_READ_UUID = "25AE1442-05D3-4C5B-8281-93D4E07420CF"
 private const val CHAR_FOR_WRITE_UUID = "25AE1443-05D3-4C5B-8281-93D4E07420CF"
 private const val CHAR_FOR_INDICATE_UUID = "25AE1444-05D3-4C5B-8281-93D4E07420CF"
@@ -195,6 +201,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("MissingPermission")
     private fun safeStartBleScan() {
         if (isScanning) {
             appendLog("Already scanning")
@@ -206,7 +213,8 @@ class MainActivity : AppCompatActivity() {
 
         isScanning = true
         lifecycleState = BLELifecycleState.Scanning
-        bleScanner.startScan(mutableListOf(scanFilter), scanSettings, scanCallback)
+        //bleScanner.startScan(mutableListOf(scanFilter), scanSettings, scanCallback)
+        bleScanner.startScan(scanCallback)
     }
 
     private fun safeStopBleScan() {
@@ -257,7 +265,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val scanFilter = ScanFilter.Builder()
-        .setServiceUuid(ParcelUuid(UUID.fromString(SERVICE_UUID)))
+        .setServiceUuid(ParcelUuid.fromString(SERVICE_UUID1), ParcelUuid.fromString(
+            SERVICE_UUID1_MASK))
         .build()
 
     private val scanSettings: ScanSettings
@@ -283,13 +292,70 @@ class MainActivity : AppCompatActivity() {
         .setReportDelay(0)
         .build()
 
+    var connectionStarted = false
+    val target_mac: String = "EF:C7:8B:FA:C8:B3"
+    var connectCounter: Int = 1
+    var connectedCounter : Int = 0
+    var connectErrorCounter : Int = 0
+
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val name: String? = result.scanRecord?.deviceName ?: result.device.name
             appendLog("onScanResult name=$name address= ${result.device?.address}")
-            safeStopBleScan()
-            lifecycleState = BLELifecycleState.Connecting
-            result.device.connectGatt(this@MainActivity, false, gattCallback)
+
+            //result.device.connectGatt(this@MainActivity, false, gattCallback)
+
+            if (result.device?.address == target_mac)
+            {
+                appendLog("target device found. Now do connect")
+                safeStopBleScan()
+                lifecycleState = BLELifecycleState.Connecting
+
+                if (!connectionStarted)
+                {
+                    connectionStarted = true
+                    Handler().post {
+                        startConnectionLoop(result.device)
+                    }
+                }
+            }
+        }
+
+        lateinit var dummy: BluetoothDevice
+        var dummy_gatt: BluetoothGatt? = null
+
+
+        @RequiresApi(Build.VERSION_CODES.O)
+        private fun startConnection() {
+            Handler().postDelayed( {
+                appendLog("start connection round $connectCounter")
+                dummy_gatt = dummy.connectGatt(this@MainActivity, false, gattCallback, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.PHY_LE_2M_MASK)
+            }, 2000)
+            cancelConnection()
+        }
+
+        @RequiresApi(Build.VERSION_CODES.O)
+        private fun cancelConnection() {
+            Handler().postDelayed({
+                dummy_gatt?.close()
+                dummy_gatt = null
+                appendLog("Cancelled connection round $connectCounter Success Connected $connectedCounter Connection error codes $connectErrorCounter")
+
+                connectCounter++
+
+                if (connectCounter <= 500)
+                    startConnection()
+            }, 20000);
+        }
+
+        @RequiresApi(Build.VERSION_CODES.O)
+        private fun startConnectionLoop(device: BluetoothDevice) {
+            appendLog("start connection loop")
+            // Create a non-existence device, and connect to it
+            //dummy = bluetoothAdapter.getRemoteDevice("EF:12:34:56:78:00")
+            dummy = device
+
+            startConnection()
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>?) {
@@ -317,7 +383,7 @@ class MainActivity : AppCompatActivity() {
                     appendLog("Connected to $deviceAddress")
 
                     // TODO: bonding state
-
+                    connectedCounter++
                     // recommended on UI thread https://punchthrough.com/android-ble-guide/
                     Handler(Looper.getMainLooper()).post {
                         lifecycleState = BLELifecycleState.ConnectedDiscovering
@@ -328,17 +394,18 @@ class MainActivity : AppCompatActivity() {
                     setConnectedGattToNull()
                     gatt.close()
                     lifecycleState = BLELifecycleState.Disconnected
-                    bleRestartLifecycle()
+                    //bleRestartLifecycle()
                 }
             } else {
                 // TODO: random error 133 - close() and try reconnect
 
                 appendLog("ERROR: onConnectionStateChange status=$status deviceAddress=$deviceAddress, disconnecting")
-
-                setConnectedGattToNull()
-                gatt.close()
-                lifecycleState = BLELifecycleState.Disconnected
-                bleRestartLifecycle()
+                connectErrorCounter++
+//
+//                setConnectedGattToNull()
+//                gatt.close()
+//                lifecycleState = BLELifecycleState.Disconnected
+//                bleRestartLifecycle()
             }
         }
 
@@ -353,24 +420,39 @@ class MainActivity : AppCompatActivity() {
                 return
             }
 
-            val service = gatt.getService(UUID.fromString(SERVICE_UUID)) ?: run {
-                appendLog("ERROR: Service not found $SERVICE_UUID, disconnecting")
-                gatt.disconnect()
+            if (status == 0 /* success*/) {
+                val uuids = gatt.getServices().map {
+                    service ->
+                    service.uuid
+                }
+                appendLog("onServicesDiscovered service uuids $uuids")
+            }
+
+            val service = gatt.getService(UUID.fromString(SERVICE_UUID1)) ?: run {
+                appendLog("ERROR: Service not found $SERVICE_UUID1, disconnecting")
+                //gatt.disconnect()
                 return
             }
 
             connectedGatt = gatt
-            characteristicForRead = service.getCharacteristic(UUID.fromString(CHAR_FOR_READ_UUID))
-            characteristicForWrite = service.getCharacteristic(UUID.fromString(CHAR_FOR_WRITE_UUID))
-            characteristicForIndicate = service.getCharacteristic(UUID.fromString(CHAR_FOR_INDICATE_UUID))
 
-            characteristicForIndicate?.let {
-                lifecycleState = BLELifecycleState.ConnectedSubscribing
-                subscribeToIndications(it, gatt)
-            } ?: run {
-                appendLog("WARN: characteristic not found $CHAR_FOR_INDICATE_UUID")
-                lifecycleState = BLELifecycleState.Connected
+            val chars = service.getCharacteristics().map {
+                c ->
+                c.uuid
             }
+            appendLog("onServicesDiscovered service chars $chars")
+
+//            characteristicForRead = service.getCharacteristic(UUID.fromString(CHAR_FOR_READ_UUID))
+//            characteristicForWrite = service.getCharacteristic(UUID.fromString(CHAR_FOR_WRITE_UUID))
+//            characteristicForIndicate = service.getCharacteristic(UUID.fromString(CHAR_FOR_INDICATE_UUID))
+//
+//            characteristicForIndicate?.let {
+//                lifecycleState = BLELifecycleState.ConnectedSubscribing
+//                subscribeToIndications(it, gatt)
+//            } ?: run {
+//                appendLog("WARN: characteristic not found $CHAR_FOR_INDICATE_UUID")
+//                lifecycleState = BLELifecycleState.Connected
+//            }
         }
 
         override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
